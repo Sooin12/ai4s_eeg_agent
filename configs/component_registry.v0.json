@@ -1,0 +1,406 @@
+{
+  "schema_version": "1.0",
+  "registry_id": "bci-mi-component-universe-v0",
+  "status": "broad_canonical_universe_draft",
+  "scope": "Broad EEG motor-imagery canonical component universe. Hard incompatibility is the only dataset-level exclusion criterion; maturity and cost are annotations, and listing does not imply activation or implementation completion.",
+  "components": [
+    {
+      "id": "reference_original",
+      "category": "referencing",
+      "family": "original_reference",
+      "description": "Retain the distributed recording reference.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"]},
+      "parameters": {}
+    },
+    {
+      "id": "reference_car",
+      "category": "referencing",
+      "family": "common_average_reference",
+      "description": "Re-reference each sample to the common EEG average.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"], "min_channels": 4},
+      "parameters": {"exclude_flagged_channels": {"type": "boolean", "values": [true]}}
+    },
+    {
+      "id": "reference_surface_laplacian",
+      "category": "referencing",
+      "family": "surface_laplacian",
+      "description": "Spatial Laplacian/CSD transform using electrode geometry.",
+      "maturity": "planned",
+      "cost_tier": "medium",
+      "requirements": {"modalities_any": ["EEG"], "min_channels": 16, "requires_montage": true},
+      "parameters": {"regularization": {"type": "number", "values": [1e-05, 0.0001]}}
+    },
+    {
+      "id": "filter_bandpass",
+      "category": "temporal_filtering",
+      "family": "bandpass",
+      "description": "Single band-pass filter with dataset-bounded cutoffs.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"]},
+      "parameters": {
+        "low_hz": {"type": "number", "values": [0.5, 4.0, 8.0, 10.0]},
+        "high_hz": {"type": "number", "values": [20.0, 30.0, 40.0, 45.0]},
+        "design": {"type": "string", "values": ["fir_zero_phase", "iir_zero_phase"]}
+      }
+    },
+    {
+      "id": "filter_filterbank",
+      "category": "temporal_filtering",
+      "family": "filter_bank",
+      "description": "Multiple overlapping or adjacent motor-rhythm sub-bands.",
+      "maturity": "planned",
+      "cost_tier": "medium",
+      "requirements": {"paradigms": ["motor_imagery"], "modalities_any": ["EEG"]},
+      "parameters": {
+        "bank": {"type": "string", "values": ["4hz_8_32", "subject_centered", "mu_beta_split"]}
+      }
+    },
+    {
+      "id": "notch_powerline",
+      "category": "temporal_filtering",
+      "family": "notch",
+      "description": "Apply a notch only when the retained passband reaches power-line frequency.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"]},
+      "parameters": {"frequency_source": {"type": "string", "values": ["dataset_metadata"]}}
+    },
+    {
+      "id": "resample",
+      "category": "sampling",
+      "family": "resampling",
+      "description": "Retain or downsample after anti-alias filtering.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"]},
+      "parameters": {"target_hz": {"type": "dataset_bound", "binding": "valid_resample_rates"}}
+    },
+    {
+      "id": "epoch_crop",
+      "category": "segmentation",
+      "family": "task_window",
+      "description": "Crop a stored-epoch-relative window contained in the common valid epoch.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"]},
+      "parameters": {"window_s": {"type": "dataset_bound", "binding": "valid_epoch_windows"}}
+    },
+    {
+      "id": "bad_channel_robust",
+      "category": "quality_control",
+      "family": "robust_bad_channel_detection",
+      "description": "Training-only robust channel quality detection with logged reasons.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"], "min_channels": 4},
+      "parameters": {
+        "action": {"type": "string", "values": ["retain", "drop", "interpolate"]},
+        "threshold_policy": {"type": "string", "values": ["population_robust", "subject_robust"]}
+      },
+      "downstream_decision_fields": ["threshold_policy"]
+    },
+    {
+      "id": "trial_quality_robust",
+      "category": "quality_control",
+      "family": "trial_quality",
+      "description": "Retain, down-weight, or reject trials using training-only quality evidence.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"]},
+      "parameters": {
+        "action": {"type": "string", "values": ["retain", "downweight", "reject"]},
+        "threshold_policy": {"type": "string", "values": ["subject_robust", "session_robust"]}
+      },
+      "downstream_decision_fields": ["threshold_policy"]
+    },
+    {
+      "id": "artifact_eog_regression",
+      "category": "artifact_handling",
+      "family": "eog_regression",
+      "description": "Regression-based ocular artifact correction using measured EOG channels.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"], "requires_eog": true},
+      "parameters": {}
+    },
+    {
+      "id": "ica_eeg_only",
+      "category": "artifact_handling",
+      "family": "independent_component_analysis",
+      "description": "EEG-only ICA with component evidence; no EOG-regression claim.",
+      "maturity": "planned",
+      "cost_tier": "high",
+      "requirements": {"modalities_any": ["EEG"], "min_channels": 16, "min_trials": 100},
+      "parameters": {
+        "algorithm": {"type": "string", "values": ["fastica", "picard"]},
+        "component_action": {"type": "string", "values": ["none", "evidence_reviewed_exclusion"]}
+      },
+      "downstream_decision_fields": ["component_action"]
+    },
+    {
+      "id": "feature_resting_iaf",
+      "category": "features",
+      "family": "resting_individual_alpha_frequency",
+      "description": "Estimate individual alpha frequency from an independent resting-state recording.",
+      "maturity": "research_candidate",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"], "requires_resting_state": true},
+      "parameters": {}
+    },
+    {
+      "id": "feature_xdawn",
+      "category": "features",
+      "family": "xdawn_spatial_filter",
+      "description": "ERP-oriented spatial filtering for event-related potentials.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"], "paradigms": ["erp"]},
+      "parameters": {"n_components": {"type": "integer", "values": [2, 4, 6]}}
+    },
+    {
+      "id": "feature_log_bandpower",
+      "category": "features",
+      "family": "spectral_power",
+      "description": "Log band-power features in fixed or subject-centered bands.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"]},
+      "parameters": {
+        "band_policy": {"type": "string", "values": ["fixed_mu_beta", "subject_centered", "filter_bank"]},
+        "spatial_summary": {"type": "string", "values": ["all_channels", "sensorimotor_subset"]}
+      }
+    },
+    {
+      "id": "feature_csp",
+      "category": "features",
+      "family": "common_spatial_patterns",
+      "description": "Regularized binary CSP with training-fold-only fitting.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"paradigms": ["motor_imagery"], "binary_classes": true, "min_channels": 4},
+      "parameters": {
+        "n_components": {"type": "integer", "values": [2, 4, 6, 8]},
+        "covariance_regularization": {"type": "string", "values": ["none", "ledoit_wolf", "oas"]}
+      }
+    },
+    {
+      "id": "feature_fbcsp",
+      "category": "features",
+      "family": "filter_bank_csp",
+      "description": "CSP features across multiple motor-rhythm sub-bands.",
+      "maturity": "planned",
+      "cost_tier": "medium",
+      "requirements": {"paradigms": ["motor_imagery"], "binary_classes": true, "min_channels": 4, "min_trials": 100},
+      "parameters": {
+        "components_per_band": {"type": "integer", "values": [2, 4]},
+        "feature_selection": {"type": "string", "values": ["mutual_information", "sparse_linear"]}
+      }
+    },
+    {
+      "id": "feature_covariance",
+      "category": "features",
+      "family": "covariance_matrices",
+      "description": "Shrinkage covariance representation retained on the SPD manifold.",
+      "maturity": "planned",
+      "cost_tier": "medium",
+      "requirements": {"modalities_any": ["EEG"], "min_channels": 4},
+      "parameters": {
+        "covariance": {"type": "string", "values": ["oas", "ledoit_wolf", "schäfer_strimmer"]}
+      }
+    },
+    {
+      "id": "feature_covariance_tangent",
+      "category": "features",
+      "family": "riemannian_tangent_space",
+      "description": "Shrinkage covariance matrices mapped to a tangent space.",
+      "maturity": "planned",
+      "cost_tier": "medium",
+      "requirements": {"modalities_any": ["EEG"], "min_channels": 4},
+      "parameters": {
+        "covariance": {"type": "string", "values": ["oas", "ledoit_wolf", "schäfer_strimmer"]},
+        "reference_metric": {"type": "string", "values": ["riemann", "logeuclid"]}
+      }
+    },
+    {
+      "id": "feature_time_frequency",
+      "category": "features",
+      "family": "time_frequency",
+      "description": "Wavelet or multitaper time-frequency summaries.",
+      "maturity": "planned",
+      "cost_tier": "high",
+      "requirements": {"modalities_any": ["EEG"], "min_trials": 100},
+      "parameters": {
+        "transform": {"type": "string", "values": ["morlet", "multitaper"]},
+        "summary": {"type": "string", "values": ["band_time_bins", "erd_ers_features"]}
+      }
+    },
+    {
+      "id": "model_lda",
+      "category": "models",
+      "family": "linear_discriminant_analysis",
+      "description": "LDA or shrinkage LDA classifier.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"min_trials": 20},
+      "parameters": {"shrinkage": {"type": "string", "values": ["none", "auto"]}}
+    },
+    {
+      "id": "model_logistic",
+      "category": "models",
+      "family": "regularized_logistic_regression",
+      "description": "Regularized linear logistic classifier.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"min_trials": 20},
+      "parameters": {
+        "penalty": {"type": "string", "values": ["l2", "elasticnet"]},
+        "c": {"type": "number", "values": [0.01, 0.1, 1.0, 10.0]}
+      }
+    },
+    {
+      "id": "model_linear_svm",
+      "category": "models",
+      "family": "linear_svm",
+      "description": "Linear support-vector classifier with calibrated scores when required.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"min_trials": 20},
+      "parameters": {"c": {"type": "number", "values": [0.01, 0.1, 1.0, 10.0]}}
+    },
+    {
+      "id": "model_kernel_svm",
+      "category": "models",
+      "family": "kernel_svm",
+      "description": "Nonlinear support-vector classifier over compact engineered EEG features.",
+      "maturity": "planned",
+      "cost_tier": "medium",
+      "requirements": {"min_trials": 100},
+      "parameters": {
+        "kernel": {"type": "string", "values": ["rbf"]},
+        "c": {"type": "number", "values": [0.1, 1.0, 10.0]},
+        "gamma": {"type": "string", "values": ["scale", "auto"]}
+      }
+    },
+    {
+      "id": "model_tree_ensemble",
+      "category": "models",
+      "family": "tree_ensemble",
+      "description": "Random-forest or gradient-boosted ensemble over engineered EEG features.",
+      "maturity": "research_candidate",
+      "cost_tier": "medium",
+      "requirements": {"min_trials": 100},
+      "parameters": {
+        "estimator": {"type": "string", "values": ["random_forest", "gradient_boosting"]},
+        "max_depth": {"type": "integer", "values": [3, 6, 12]}
+      },
+      "downstream_decision_fields": ["activation"]
+    },
+    {
+      "id": "model_shallow_convnet",
+      "category": "models",
+      "family": "shallow_eeg_convnet",
+      "description": "Compact shallow convolutional network specialized for oscillatory EEG decoding.",
+      "maturity": "research_candidate",
+      "cost_tier": "high",
+      "requirements": {"modalities_any": ["EEG"], "min_trials": 300},
+      "parameters": {
+        "dropout": {"type": "number", "values": [0.25, 0.5]},
+        "early_stopping": {"type": "boolean", "values": [true]}
+      },
+      "downstream_decision_fields": ["activation"]
+    },
+    {
+      "id": "model_mdm",
+      "category": "models",
+      "family": "riemannian_mdm",
+      "description": "Minimum distance to class covariance means.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {"modalities_any": ["EEG"], "min_channels": 4},
+      "parameters": {"metric": {"type": "string", "values": ["riemann", "logeuclid"]}}
+    },
+    {
+      "id": "model_eegnet",
+      "category": "models",
+      "family": "compact_cnn",
+      "description": "Compact EEGNet-style learned representation and classifier.",
+      "maturity": "research_candidate",
+      "cost_tier": "high",
+      "requirements": {"modalities_any": ["EEG"], "min_trials": 300},
+      "parameters": {
+        "dropout": {"type": "number", "values": [0.25, 0.5]},
+        "early_stopping": {"type": "boolean", "values": [true]}
+      },
+      "downstream_decision_fields": ["activation"]
+    },
+    {
+      "id": "adapt_none",
+      "category": "session_adaptation",
+      "family": "no_adaptation",
+      "description": "No explicit session/domain adaptation baseline.",
+      "maturity": "planned",
+      "cost_tier": "low",
+      "requirements": {},
+      "parameters": {}
+    },
+    {
+      "id": "adapt_covariance_recenter",
+      "category": "session_adaptation",
+      "family": "covariance_recentering",
+      "description": "Training-visible session/domain covariance recentering.",
+      "maturity": "planned",
+      "cost_tier": "medium",
+      "requirements": {"multiple_sessions": true, "modalities_any": ["EEG"]},
+      "parameters": {
+        "target_statistics": {"type": "string", "values": ["unlabeled_session", "calibration_trials"]}
+      }
+    },
+    {
+      "id": "adapt_coral",
+      "category": "session_adaptation",
+      "family": "correlation_alignment",
+      "description": "Feature covariance alignment using only protocol-permitted target statistics.",
+      "maturity": "research_candidate",
+      "cost_tier": "medium",
+      "requirements": {"multiple_sessions": true, "min_trials": 100},
+      "parameters": {"regularization": {"type": "number", "values": [0.0001, 0.001, 0.01]}},
+      "downstream_decision_fields": ["target_data_access"]
+    }
+  ],
+  "compatibility_rules": [
+    {
+      "id": "single_band_csp_requires_bandpass",
+      "if_component": "feature_csp",
+      "requires_any": ["filter_bandpass"],
+      "condition": "feature_csp is intentionally the single-band variant; use feature_fbcsp with filter_filterbank"
+    },
+    {
+      "id": "fbcsp_requires_filterbank",
+      "if_component": "feature_fbcsp",
+      "requires_any": ["filter_filterbank"]
+    },
+    {
+      "id": "mdm_requires_covariance_representation",
+      "if_component": "model_mdm",
+      "requires_any": ["feature_covariance"]
+    },
+    {
+      "id": "powerline_notch_is_conditional",
+      "if_component": "notch_powerline",
+      "condition": "activate only if the selected passband reaches the dataset power-line frequency"
+    },
+    {
+      "id": "all_fitting_is_training_only",
+      "condition": "every data-dependent transform must fit only inside the current training fold/session boundary"
+    },
+    {
+      "id": "confirmation_data_is_inaccessible",
+      "condition": "frozen confirmation sessions cannot contribute features, thresholds, normalization, early stopping, or candidate ranking"
+    }
+  ]
+}

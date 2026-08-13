@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bci-autodiscovery"
+version = "0.1.0"
+description = "Auditable, budget-aware discovery of individualized BCI pipelines"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+data = [
+    "numpy>=1.26,<3",
+    "scipy>=1.13,<2",
+    "mne>=1.10,<2",
+]
+test = [
+    "pytest>=8,<9",
+]
+
+[project.scripts]
+bci-validate-semantic-dataset = "bci_autodiscovery.profiling.semantic_validation:main"
+bci-profile-dataset = "bci_autodiscovery.agents.cli:main"
+bci-build-search-space = "bci_autodiscovery.agents.search_cli:main"
+bci-scout-literature = "bci_autodiscovery.agents.literature_cli:main"
+bci-understand-dataset = "bci_autodiscovery.agents.dataset_level_cli:main"
+bci-resume-dataset-critic = "bci_autodiscovery.agents.dataset_critic_cli:main"
+bci-resume-dataset-revision = "bci_autodiscovery.agents.dataset_revision_cli:main"
+bci-legacy-plan-protocol = "bci_autodiscovery.agents.protocol_cli:main"
+bci-legacy-review-protocol = "bci_autodiscovery.agents.protocol_review_cli:main"
+bci-legacy-protocol-inspect = "bci_autodiscovery.workflow.protocol_cli:main"
+bci-design-research = "bci_autodiscovery.agents.research_design_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

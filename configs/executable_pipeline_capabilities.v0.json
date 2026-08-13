@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "capability_registry_id": "mi-executable-pipeline-capabilities-v0",
+  "status": "executable_capabilities_not_search_activation",
+  "scope": "Deterministic CPU-safe motor-imagery candidates implemented by the local executor. The registry states what can run; the autonomous protocol and search agents decide what to test.",
+  "families": ["bandpower_lda", "csp_lda"],
+  "bandpasses_hz": [[4.0, 40.0], [8.0, 13.0], [8.0, 30.0], [13.0, 30.0]],
+  "csp_components": [2, 4, 6],
+  "lda_shrinkage": [0.0, 0.1, 0.3, 0.5],
+  "cv_folds": [3, 4, 5],
+  "random_seed_policy": "non_negative_integer_recorded_per_candidate",
+  "minimum_distinct_candidates_before_lock": 2,
+  "observed_best_selection_tolerance": 0.02
+}

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai4s.local/schemas/dataset_semantics.v1.json",
+  "title": "Dataset semantic adapter contract",
+  "type": "object",
+  "required": ["schema_version", "adapter_kind", "source_globs"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "adapter_kind": {"enum": ["mne_raw", "declarative", "mat_epochs"]},
+    "source_globs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "mne_mapping": {
+      "type": "object",
+      "required": ["subject_regex", "event_mapping"],
+      "properties": {
+        "subject_regex": {"type": "string"},
+        "session_regex": {"type": "string"},
+        "event_mapping": {"type": "object", "minProperties": 1}
+      }
+    },
+    "container_mapping": {
+      "type": "object",
+      "required": [
+        "signal_object_or_stream",
+        "axis_order",
+        "event_source",
+        "event_code_mapping",
+        "data_role_policy"
+      ],
+      "properties": {
+        "signal_object_or_stream": {},
+        "axis_order": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {"type": "string"}
+        },
+        "event_source": {},
+        "event_code_mapping": {"type": "object", "minProperties": 1},
+        "data_role_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "mat_mapping": {
+      "type": "object",
+      "required": [
+        "signal_key", "label_key", "axis_order", "subject_regex", "session_regex",
+        "event_code_mapping", "sampling_frequency_hz", "channel_names", "channel_units",
+        "data_role_policy"
+      ],
+      "properties": {
+        "signal_key": {"type": "string", "minLength": 1},
+        "label_key": {"type": "string", "minLength": 1},
+        "axis_order": {
+          "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true,
+          "items": {"enum": ["channel", "sample", "trial"]}
+        },
+        "subject_regex": {"type": "string", "minLength": 1},
+        "session_regex": {"type": "string", "minLength": 1},
+        "run_regex": {"type": "string", "minLength": 1},
+        "subject_assertion_regex": {"type": "string", "minLength": 1},
+        "session_assertion_regex": {"type": "string", "minLength": 1},
+        "run_assertion_regex": {"type": "string", "minLength": 1},
+        "event_code_mapping": {"type": "object", "minProperties": 1},
+        "sampling_frequency_hz": {"type": "number", "exclusiveMinimum": 0},
+        "channel_names": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "channel_units": {"type": "string", "minLength": 1},
+        "data_role_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "profile_hints": {
+      "type": "object",
+      "required": [
+        "dataset", "paradigm", "resting_state", "signal", "equipment", "events", "constraints"
+      ]
+    },
+    "profile": {
+      "type": "object",
+      "description": "Complete DatasetProfile body without schema_version/evidence; validated by the project contract validator."
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"adapter_kind": {"const": "mne_raw"}}},
+      "then": {"required": ["mne_mapping", "profile"]}
+    },
+    {
+      "if": {"properties": {"adapter_kind": {"const": "declarative"}}},
+      "then": {"required": ["container_mapping", "profile"]}
+    },
+    {
+      "if": {"properties": {"adapter_kind": {"const": "mat_epochs"}}},
+      "then": {"required": ["mat_mapping", "profile_hints"]}
+    }
+  ],
+  "additionalProperties": false
+}

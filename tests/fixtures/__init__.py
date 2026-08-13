@@ -1,0 +1,1 @@
+"""Reusable deterministic contract fixtures."""

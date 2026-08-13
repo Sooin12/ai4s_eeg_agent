@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "benchmark_id": "autonomous-cycle-benchmark-v2",
+  "description": "Discriminative engineering benchmark with heterogeneous target frequencies, spatial/global-power patterns, lower SNR, and trial-level nuisance rhythms outside each target band. It does not support an EEG scientific claim.",
+  "fixture_generator_version": "v2_frequency_nuisance",
+  "random_seed": 20260806,
+  "subjects_per_group": 4,
+  "trials_per_class": 24,
+  "noise_scale": 1.4,
+  "nuisance_scale": 0.55,
+  "base_amplitude": 0.68,
+  "amplitude_jitter": 0.14,
+  "confirmation_amplitude_ratio": 0.92,
+  "near_oracle_tolerance": 0.02,
+  "guided_minimum_cycles": 2,
+  "guided_maximum_cycles": 4,
+  "guided_stop_score": 0.75,
+  "random_search_repetitions": 100
+}

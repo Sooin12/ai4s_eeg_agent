@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.mne-config/
+.mpl-config/
+*.egg-info/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local scratch space
+tmp/
+
+# Large or reproducible datasets
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Runtime outputs
+artifacts/runs/*
+!artifacts/runs/.gitkeep
+agent_outputs/*
+!agent_outputs/README.md
+
+# Third-party reference binaries (keep citations/metadata in text files)
+docs/相近研究文献/*.pdf
+
+# Generated model and local database artifacts
+*.ckpt
+*.joblib
+*.onnx
+*.pkl
+*.pt
+*.pth
+*.sqlite
+*.sqlite3
+
+# Logs and local profiling output
+*.log
+*.prof
+/-SearchSpacePath
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example

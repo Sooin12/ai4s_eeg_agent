@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "catalog_id": "mainstream_eeg_dataset_formats_v1",
+  "policy": {
+    "recognition_is_not_semantic_acceptance": true,
+    "raw_signal_arrays_must_remain_local": true,
+    "unknown_array_axes_must_not_be_inferred_from_extension": true,
+    "profile_gate": "A profile-ready semantic adapter plus deterministic validation evidence is required before DatasetProfile generation."
+  },
+  "profile_ready_adapters": [
+    {
+      "adapter_id": "bids_eeg_v1",
+      "organization": "BIDS EEG",
+      "accepted_signal_containers": ["edf_edfplus", "brainvision_core", "eeglab_set", "biosemi_bdf"]
+    },
+    {
+      "adapter_id": "mne_raw_semantic_v1",
+      "organization": "non-BIDS recordings plus validated dataset_semantics.json",
+      "accepted_signal_containers": ["edf_edfplus", "biosemi_bdf", "brainvision_core", "eeglab_set", "mne_fif", "biosig_gdf", "neuroscan_cnt", "egi_mff"]
+    },
+    {
+      "adapter_id": "declarative_semantic_v1",
+      "organization": "flexible containers plus a full validated semantic profile",
+      "accepted_signal_containers": ["brainvision_recording", "xdf", "nwb", "mat_container", "hdf5_container", "numpy_container"]
+    },
+    {
+      "adapter_id": "mat_epoch_semantic_v1",
+      "organization": "epoched MATLAB arrays plus validated dataset_semantics.json",
+      "accepted_signal_containers": ["mat_container"]
+    }
+  ],
+  "recognized_format_ids": [
+    "brainvision_core",
+    "brainvision_recording",
+    "edf_edfplus",
+    "biosemi_bdf",
+    "eeglab_set",
+    "mne_fif",
+    "biosig_gdf",
+    "neuroscan_cnt",
+    "egi_mff",
+    "xdf",
+    "nwb",
+    "mat_container",
+    "hdf5_container",
+    "numpy_container"
+  ],
+  "semantic_sidecar_minimum_fields": [
+    "dataset_id",
+    "paradigm",
+    "subject_id_rule",
+    "session_id_rule",
+    "recording_file_rule",
+    "signal_object_or_stream",
+    "axis_order",
+    "sampling_frequency",
+    "channel_names_and_units",
+    "event_source",
+    "event_code_mapping",
+    "epoch_time_reference",
+    "data_role_policy",
+    "source_hashes"
+  ],
+  "official_references": [
+    "https://bids-specification.readthedocs.io/en/stable/modality-specific-files/electroencephalography.html",
+    "https://mne.tools/stable/documentation/implementation.html#supported-data-formats",
+    "https://www.edfplus.info/specs/index.html",
+    "https://www.brainproducts.com/support-resources/brainvision-core-data-format-1-0/",
+    "https://www.brainproducts.com/support-resources/brainvision-recording-format/",
+    "https://eeglab.org/tutorials/ConceptsGuide/Data_Structures.html",
+    "https://github.com/sccn/xdf/wiki/Specifications",
+    "https://nwb-schema.readthedocs.io/en/stable/format.html"
+  ]
+}
