@@ -45,7 +45,7 @@ def evaluate_frozen_decision(
     policy = (protocol.get("evaluation") or {}).get("decision_policy")
     if not isinstance(policy, dict):
         raise FrozenDecisionError("Frozen protocol lacks a machine-executable decision policy")
-    required = {
+    v1_fields = {
         "chance_level",
         "minimum_confirmation_score",
         "maximum_search_to_confirmation_drop",
@@ -55,8 +55,13 @@ def evaluate_frozen_decision(
         "otherwise_outcome",
         "confirmation_failure_outcome",
     }
-    if set(policy) != required:
+    v2_fields = v1_fields | {"policy_version", "minimum_evaluable_units"}
+    policy_fields = frozenset(policy)
+    if policy_fields not in {frozenset(v1_fields), frozenset(v2_fields)}:
         raise FrozenDecisionError("Frozen decision policy has incomplete or unknown fields")
+    policy_version = "2.0" if policy_fields == frozenset(v2_fields) else "1.0"
+    if policy_version == "2.0" and policy.get("policy_version") != "2.0":
+        raise FrozenDecisionError("Frozen decision policy has an unsupported policy_version")
     if (
         policy.get("success_requires_all_thresholds") is not True
         or policy.get("below_chance_outcome") != "refuse"
@@ -75,6 +80,11 @@ def evaluate_frozen_decision(
     }
     required_candidates = int(policy["minimum_distinct_search_candidates"])
     candidate_criterion = len(distinct_configurations) >= required_candidates
+    minimum_units = (
+        int(policy["minimum_evaluable_units"])
+        if policy_version == "2.0"
+        else 1
+    )
 
     if confirmation_result.get("status") != "completed_one_shot":
         return {
@@ -85,6 +95,11 @@ def evaluate_frozen_decision(
             "criteria": {
                 "confirmation_completed_one_shot": False,
                 "minimum_distinct_search_candidates": candidate_criterion,
+                **(
+                    {"minimum_evaluable_units": False}
+                    if policy_version == "2.0"
+                    else {}
+                ),
             },
             "observed": {
                 "distinct_search_candidates": len(distinct_configurations),
@@ -106,9 +121,15 @@ def evaluate_frozen_decision(
     observed_drop = search_score - confirmation_score
     score_criterion = confirmation_score >= float(policy["minimum_confirmation_score"])
     drop_criterion = observed_drop <= float(policy["maximum_search_to_confirmation_drop"])
+    evaluable_units = int(confirmation_result.get("trial_count", 0))
     criteria = {
         "confirmation_completed_one_shot": True,
         "minimum_distinct_search_candidates": candidate_criterion,
+        **(
+            {"minimum_evaluable_units": evaluable_units >= minimum_units}
+            if policy_version == "2.0"
+            else {}
+        ),
         "minimum_confirmation_score": score_criterion,
         "maximum_search_to_confirmation_drop": drop_criterion,
     }
@@ -133,6 +154,11 @@ def evaluate_frozen_decision(
             "confirmation_score": confirmation_score,
             "search_to_confirmation_drop": observed_drop,
             "distinct_search_candidates": len(distinct_configurations),
+            **(
+                {"evaluable_units": evaluable_units}
+                if policy_version == "2.0"
+                else {}
+            ),
         },
         "thresholds": policy,
     }

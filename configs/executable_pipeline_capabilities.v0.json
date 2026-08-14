@@ -9,6 +9,14 @@
   "lda_shrinkage": [0.0, 0.1, 0.3, 0.5],
   "cv_folds": [3, 4, 5],
   "random_seed_policy": "non_negative_integer_recorded_per_candidate",
+  "channel_strategies": ["all", "named"],
+  "profile_conditioned_policy": {
+    "peak_half_width_hz": 2.0,
+    "frequency_bounds_hz": [4.0, 40.0],
+    "minimum_bandwidth_hz": 3.0,
+    "top_channel_set_sizes": [2, 4, 6],
+    "maximum_named_channels": 6
+  },
   "minimum_distinct_candidates_before_lock": 2,
   "observed_best_selection_tolerance": 0.02
 }

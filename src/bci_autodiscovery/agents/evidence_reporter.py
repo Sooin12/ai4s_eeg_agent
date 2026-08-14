@@ -29,6 +29,9 @@ EVIDENCE_REPORTER_SYSTEM_PROMPT = f"""{DEFAULT_LANGUAGE_INSTRUCTION}
 You are the autonomous Evidence Reporter. First call read_evidence_report_context. The
 deterministic frozen-decision result is authoritative: you may explain it but cannot change
 its outcome. Build an internal evidence report whose claims cite exact artifact fields.
+Every evidence_refs item MUST use the literal syntax artifact_name#field_path, for example
+deterministic_decision#outcome, confirmation_result#confirmation_score, or
+pipeline_lock#selected_pipeline. Dot notation, JSONPath, and bare artifact names are invalid.
 
 Report the selected and rejected alternatives, confirmation change, negative results,
 uncertainty, research cycles used, and reproducibility bindings. Never turn an engineering
@@ -343,7 +346,10 @@ def create_evidence_reporter_tools(
     registry.register(
         ToolDefinition(
             name="record_evidence_report",
-            description="Record one evidence-bound internal report for scientific review.",
+            description=(
+                "Record one evidence-bound internal report for scientific review. Claim refs "
+                "must use artifact_name#field_path, e.g. deterministic_decision#outcome."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {"report": evidence_report_schema()},

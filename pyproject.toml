@@ -31,6 +31,7 @@ bci-legacy-plan-protocol = "bci_autodiscovery.agents.protocol_cli:main"
 bci-legacy-review-protocol = "bci_autodiscovery.agents.protocol_review_cli:main"
 bci-legacy-protocol-inspect = "bci_autodiscovery.workflow.protocol_cli:main"
 bci-design-research = "bci_autodiscovery.agents.research_design_cli:main"
+bci-run-individualized-demo = "bci_autodiscovery.demo.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

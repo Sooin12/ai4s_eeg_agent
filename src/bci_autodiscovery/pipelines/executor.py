@@ -31,6 +31,8 @@ class PipelineSpec:
     lda_shrinkage: float
     cv_folds: int
     random_seed: int
+    channel_strategy: str = "all"
+    selected_channels: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "PipelineSpec":
@@ -49,6 +51,10 @@ class PipelineSpec:
                 lda_shrinkage=float(value["lda_shrinkage"]),
                 cv_folds=int(value["cv_folds"]),
                 random_seed=int(value["random_seed"]),
+                channel_strategy=str(value.get("channel_strategy", "all")),
+                selected_channels=tuple(
+                    str(item) for item in value.get("selected_channels", [])
+                ),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise CandidateExecutionError(f"Malformed pipeline specification: {exc}") from exc
@@ -58,6 +64,7 @@ class PipelineSpec:
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["bandpass_hz"] = list(self.bandpass_hz)
+        value["selected_channels"] = list(self.selected_channels)
         return value
 
 
@@ -68,6 +75,8 @@ class FittedPipeline:
     spec: dict[str, Any]
     sampling_frequency_hz: float
     channel_count: int
+    input_channel_names: list[str]
+    selected_channel_names: list[str]
     spatial_filters: list[list[float]] | None
     feature_mean: list[float]
     feature_scale: list[float]
@@ -112,6 +121,15 @@ def validate_pipeline_spec(spec: PipelineSpec) -> None:
         raise CandidateExecutionError("cv_folds must be >= 2")
     if spec.random_seed < 0:
         raise CandidateExecutionError("random_seed must be non-negative")
+    if spec.channel_strategy not in {"all", "named"}:
+        raise CandidateExecutionError("channel_strategy must be all or named")
+    if spec.channel_strategy == "all" and spec.selected_channels:
+        raise CandidateExecutionError("all-channel pipelines cannot name selected_channels")
+    if spec.channel_strategy == "named":
+        if not spec.selected_channels:
+            raise CandidateExecutionError("named channel strategy requires selected_channels")
+        if len(spec.selected_channels) != len(set(spec.selected_channels)):
+            raise CandidateExecutionError("selected_channels must be unique")
 
 
 def pipeline_spec_schema() -> dict[str, Any]:
@@ -131,6 +149,12 @@ def pipeline_spec_schema() -> dict[str, Any]:
             "lda_shrinkage": {"type": "number"},
             "cv_folds": {"type": "integer"},
             "random_seed": {"type": "integer"},
+            "channel_strategy": {"type": "string", "enum": ["all", "named"]},
+            "selected_channels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "uniqueItems": True,
+            },
         },
         "required": [
             "pipeline_id",
@@ -199,6 +223,35 @@ def _bandpass(data: np.ndarray, sfreq: float, band: tuple[float, float]) -> np.n
         return sosfiltfilt(sos, data, axis=-1)
     except ValueError as exc:
         raise CandidateExecutionError(f"Bandpass failed: {exc}") from exc
+
+
+def _select_channels(
+    data: np.ndarray,
+    channel_names: Sequence[str],
+    spec: PipelineSpec,
+) -> tuple[np.ndarray, tuple[str, ...]]:
+    names = tuple(str(item) for item in channel_names)
+    if len(names) != len(set(names)):
+        raise CandidateExecutionError("Signal contract contains duplicate channel names")
+    if spec.channel_strategy == "all":
+        return data, names
+    missing = [name for name in spec.selected_channels if name not in names]
+    if missing:
+        raise CandidateExecutionError(f"Selected channels are unavailable: {missing}")
+    indices = [names.index(name) for name in spec.selected_channels]
+    return data[:, indices, :], spec.selected_channels
+
+
+def _reorder_channels(
+    data: np.ndarray,
+    actual_names: Sequence[str],
+    expected_names: Sequence[str],
+) -> np.ndarray:
+    actual = tuple(str(item) for item in actual_names)
+    expected = tuple(str(item) for item in expected_names)
+    if len(actual) != len(set(actual)) or set(actual) != set(expected):
+        raise CandidateExecutionError("Evaluation channel contract differs from fitted model")
+    return data[:, [actual.index(name) for name in expected], :]
 
 
 def _normalized_covariances(data: np.ndarray) -> np.ndarray:
@@ -384,6 +437,7 @@ class DeterministicPipelineExecutor:
         if any(
             session.data.shape[1:] != self.sessions[0].data.shape[1:]
             or session.sampling_frequency_hz != self.sessions[0].sampling_frequency_hz
+            or tuple(session.channel_names) != tuple(self.sessions[0].channel_names)
             for session in self.sessions
         ):
             raise CandidateExecutionError("Search sessions have incompatible signal contracts")
@@ -393,6 +447,13 @@ class DeterministicPipelineExecutor:
         )
         if not np.all(np.isfinite(data)):
             raise CandidateExecutionError("Executor refuses non-finite search data")
+        data, selected_channel_names = _select_channels(
+            data,
+            self.sessions[0].channel_names,
+            spec,
+        )
+        if spec.family == "csp_lda" and spec.csp_components > data.shape[1]:
+            raise CandidateExecutionError("CSP components exceed selected channel count")
         filtered = _bandpass(
             np.asarray(data, dtype=np.float64),
             self.sessions[0].sampling_frequency_hz,
@@ -458,6 +519,7 @@ class DeterministicPipelineExecutor:
                 str(label): int(np.count_nonzero(labels == label))
                 for label in np.unique(labels)
             },
+            "selected_channel_names": list(selected_channel_names),
             "validation": {
                 "scheme": "deterministic_stratified_kfold_within_search_role",
                 "folds": spec.cv_folds,
@@ -476,6 +538,10 @@ class DeterministicPipelineExecutor:
         spec = spec_value if isinstance(spec_value, PipelineSpec) else PipelineSpec.from_dict(spec_value)
         validate_pipeline_spec(spec)
         data, labels, sfreq = self._combined_sessions(self.sessions)
+        input_channel_names = tuple(self.sessions[0].channel_names)
+        data, selected_channel_names = _select_channels(data, input_channel_names, spec)
+        if spec.family == "csp_lda" and spec.csp_components > data.shape[1]:
+            raise CandidateExecutionError("CSP components exceed selected channel count")
         filtered = _bandpass(data, sfreq, spec.bandpass_hz)
         features, feature_state = _fit_feature_state(filtered, labels, spec)
         feature_mean = np.mean(features, axis=0)
@@ -488,6 +554,8 @@ class DeterministicPipelineExecutor:
             "spec": spec.to_dict(),
             "sampling_frequency_hz": sfreq,
             "channel_count": int(data.shape[1]),
+            "input_channel_names": list(input_channel_names),
+            "selected_channel_names": list(selected_channel_names),
             "spatial_filters": filters.tolist() if filters is not None else None,
             "feature_mean": feature_mean.tolist(),
             "feature_scale": feature_scale.tolist(),
@@ -518,9 +586,24 @@ class DeterministicPipelineExecutor:
         if any(session.subject_id != fitted.training_subject_id for session in sessions):
             raise CandidateExecutionError("Fitted pipeline cannot be applied to another subject")
         data, labels, sfreq = self._combined_sessions(sessions)
-        if sfreq != fitted.sampling_frequency_hz or data.shape[1] != fitted.channel_count:
+        if sfreq != fitted.sampling_frequency_hz:
             raise CandidateExecutionError("Evaluation signal contract differs from fitted model")
         spec = PipelineSpec.from_dict(fitted.spec)
+        data = _reorder_channels(
+            data,
+            sessions[0].channel_names,
+            fitted.input_channel_names,
+        )
+        data, selected_channel_names = _select_channels(
+            data,
+            fitted.input_channel_names,
+            spec,
+        )
+        if (
+            data.shape[1] != fitted.channel_count
+            or list(selected_channel_names) != fitted.selected_channel_names
+        ):
+            raise CandidateExecutionError("Evaluation channel selection differs from fitted model")
         filtered = _bandpass(data, sfreq, spec.bandpass_hz)
         feature_state = {
             "spatial_filters": (
@@ -565,6 +648,7 @@ class DeterministicPipelineExecutor:
             if (
                 session.data.shape[1:] != first.data.shape[1:]
                 or session.sampling_frequency_hz != first.sampling_frequency_hz
+                or tuple(session.channel_names) != tuple(first.channel_names)
             ):
                 raise CandidateExecutionError("Sessions have incompatible signal contracts")
         data = np.concatenate(

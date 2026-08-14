@@ -15,6 +15,7 @@ from bci_autodiscovery.agents.providers import ScriptedProvider
 from bci_autodiscovery.agents.runtime import AgentRuntime
 from bci_autodiscovery.agents.tools import ToolExecutionError
 from bci_autodiscovery.pipelines import DeterministicPipelineExecutor
+from bci_autodiscovery.literature import PaperRecord
 from bci_autodiscovery.profiling.subject_measurements import EpochSession
 from bci_autodiscovery.workflow.autonomy import sha256_path
 from tests.fixtures.contracts import (
@@ -256,3 +257,121 @@ def test_equivalent_candidate_and_early_lock_fail_closed(tmp_path: Path) -> None
                 "stop_reason": "too early",
             },
         )
+
+
+class _LiteratureSource:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def search(self, query) -> list[PaperRecord]:
+        return [
+            PaperRecord(
+                source=self.name,
+                source_id=f"{self.name}-1",
+                doi="10.1000/profile-guided-mi",
+                title="Profile-guided frequency and channel selection for motor imagery",
+                year=2025,
+                abstract="Individual frequency and spatial selection are evaluated before decoding.",
+            )
+        ]
+
+
+def test_profile_conditioned_components_and_literature_are_bound_to_lock(tmp_path: Path) -> None:
+    subject_path, protocol_path, envelope_path = _contracts(tmp_path)
+    subject = json.loads(subject_path.read_text(encoding="utf-8"))
+    subject["hypotheses"] = [
+        {
+            "hypothesis_id": "h-individual-mu",
+            "statement": "A narrow individual mu band and ranked motor channels may help.",
+            "evidence_measurement_ids": ["spectral-1", "separability-1"],
+            "confidence": 0.7,
+        }
+    ]
+    subject["measurements"] = [
+        {
+            "measurement_id": "quality-1",
+            "kind": "signal_quality",
+            "payload": {"flat_channel_names": [], "robust_outlier_channel_names": []},
+        },
+        {
+            "measurement_id": "spectral-1",
+            "kind": "spectral_profile",
+            "payload": {
+                "mu_peak": {"frequency_hz": 11.0},
+                "beta_peak": {"frequency_hz": 20.0},
+            },
+        },
+        {
+            "measurement_id": "separability-1",
+            "kind": "class_separability",
+            "payload": {
+                "top_channels": [
+                    {"channel_name": "C3"},
+                    {"channel_name": "P4"},
+                    {"channel_name": "C4"},
+                    {"channel_name": "Cz"},
+                ],
+                "bandwise": {},
+            },
+        },
+    ]
+    _write(subject_path, subject)
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    envelope["permissions"]["allow_network_literature"] = True
+    _write(envelope_path, envelope)
+    tools, _ = create_pipeline_search_tools(
+        executor=DeterministicPipelineExecutor(sessions=[_search_session()]),
+        subject_profile_path=subject_path,
+        frozen_protocol_path=protocol_path,
+        autonomy_envelope_path=envelope_path,
+        capability_registry_path=Path("configs/executable_pipeline_capabilities.v0.json"),
+        literature_store_path=tmp_path / "subject-literature.sqlite",
+        literature_sources={
+            "crossref": _LiteratureSource("crossref"),
+            "openalex": _LiteratureSource("openalex"),
+        },
+        literature_search_run_id="profile-conditioned-test",
+    )
+    context = tools.execute("read_pipeline_search_context", {})
+    assert [9.0, 13.0] in [
+        item["bandpass_hz"]
+        for item in context["profile_conditioned_capabilities"]["individualized_bandpasses"]
+    ]
+    evidence = tools.execute(
+        "search_subject_method_evidence",
+        {
+            "query_id": "individual-mu",
+            "query_text": "motor imagery individualized mu frequency channel selection CSP LDA",
+            "rationale": "Test the profile-linked narrow-band and channel hypothesis.",
+        },
+    )
+    paper_id = evidence["papers"][0]["stable_id"]
+    baseline = tools.execute(
+        "evaluate_pipeline_candidate",
+        {"pipeline": _pipeline("bandpower_lda", "all-channel-baseline")},
+    )
+    personalized = _pipeline("bandpower_lda", "individual-mu-named")
+    personalized.update(
+        {
+            "bandpass_hz": [9.0, 13.0],
+            "channel_strategy": "named",
+            "selected_channels": ["C3", "P4"],
+        }
+    )
+    guided = tools.execute("evaluate_pipeline_candidate", {"pipeline": personalized})
+    lock = tools.execute(
+        "lock_pipeline",
+        {
+            "selected_experiment_id": guided["experiment_id"],
+            "evidence_experiment_ids": [baseline["experiment_id"], guided["experiment_id"]],
+            "selection_rationale": ["The individualized candidate tested the measured peak and ranked channels."],
+            "rejected_alternatives": ["The all-channel broad-band baseline was retained as a comparison."],
+            "uncertainty": ["Frozen confirmation is unseen."],
+            "stop_reason": "The minimum controlled comparison is complete.",
+            "literature_paper_ids": [paper_id],
+            "profile_hypothesis_ids": ["h-individual-mu"],
+        },
+    )
+    assert lock["selected_pipeline"]["selected_channels"] == ["C3", "P4"]
+    assert lock["evidence_literature_paper_ids"] == [paper_id]
+    assert lock["evidence_subject_hypothesis_ids"] == ["h-individual-mu"]

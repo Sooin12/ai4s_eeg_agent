@@ -156,6 +156,28 @@ fail closed。Research Design Agent 的预算账本、生产CLI、恢复编排�
 
 v1 暴露候选全部饱和的问题，v2 暴露均值频谱被干扰节律误导和过早停止的问题，v3 增加分频带类别效应测量后再运行同一辨别性夹具。三轮结果与边界见 `docs/项目交接/AUTONOMOUS_CYCLE_BENCHMARK_2026-08-06.md`。
 
+## 全线路个体化 Agent Demo
+
+`bci-run-individualized-demo` 将 Research Design、Subject Profiler、个体方法文献检索、完整
+pipeline 序贯实验、Pipeline Lock Critic、一次性 frozen confirmation、Evidence Reporter 和
+Scientific Critic 串成一个可恢复入口。数值处理全部由本地确定性程序执行；模型只接收合同、画像
+测量与实验摘要，不接收原始 EEG 数组。
+
+```powershell
+$env:MOONSHOT_API_KEY = [Environment]::GetEnvironmentVariable('MOONSHOT_API_KEY', 'User')
+.\.venv\Scripts\python.exe -m bci_autodiscovery.demo.cli `
+  --run-dir artifacts\runs\individualized-demo-<date>
+```
+
+Demo 使用三名异质确定性合成被试验证工程能力，不作为真实 EEG 科学结论。每个 Agent 自主读取画像、
+调用 Crossref/OpenAlex、组合并执行完整 pipeline；每个锁定路线必须引用当前运行返回的论文 ID、画像
+假设和实验 ID。命名通道与个体峰频候选由 SubjectProfile 确定性派生，确认阶段按通道名恢复锁定输入，
+即使容器通道顺序改变也不会重拟合或静默错位。
+
+逐被试报告与总体结论分开：若冻结协议要求至少三个 subject，单个报告保持 `inconclusive`；只有三名
+被试全部完成并通过两个独立 Critic 后，确定性聚合门才可给出工程 `success`。运行详情与解释边界见
+`docs/项目交接/INDIVIDUALIZED_FULL_LOOP_DEMO_2026-08-15.md`。
+
 ## 数据验收命令
 
 官方数据保存在仓库外部，只读使用。安装最小数据依赖：

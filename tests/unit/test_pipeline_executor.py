@@ -114,3 +114,36 @@ def test_locked_model_is_serializable_and_never_refits_confirmation(family: str)
     assert result["data_role"] == "frozen_confirmation"
     assert result["fitting_performed_on_evaluation_data"] is False
     assert result["metrics"]["balanced_accuracy"] >= 0.75
+
+
+def test_named_channel_pipeline_is_bound_by_name_across_confirmation_order() -> None:
+    search = _session(seed=7)
+    spec = _spec("bandpower_lda")
+    spec.update(
+        {
+            "channel_strategy": "named",
+            "selected_channels": ["C3", "P4"],
+            "bandpass_hz": [9.0, 13.0],
+        }
+    )
+    executor = DeterministicPipelineExecutor(sessions=[search])
+    evaluated = executor.evaluate(spec)
+    assert evaluated["selected_channel_names"] == ["C3", "P4"]
+    fitted = executor.fit(spec)
+    order = [5, 4, 3, 2, 1, 0]
+    confirmation = EpochSession(
+        subject_id=search.subject_id,
+        session_id="confirmation-reordered",
+        data=search.data[:, order, :],
+        labels=search.labels,
+        sampling_frequency_hz=search.sampling_frequency_hz,
+        channel_names=tuple(search.channel_names[index] for index in order),
+        provenance={"path": "synthetic-reordered", "sha256": "fixture-reordered"},
+    )
+    result = executor.evaluate_fitted(
+        fitted,
+        sessions=[confirmation],
+        data_role="frozen_confirmation",
+    )
+    assert fitted.selected_channel_names == ["C3", "P4"]
+    assert result["metrics"]["balanced_accuracy"] >= 0.75

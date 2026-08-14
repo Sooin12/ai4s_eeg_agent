@@ -84,6 +84,19 @@ def validate_pipeline_lock(
         for item in experiments.values()
     ):
         raise PipelineLockCriticError("Search trace contains non-search or confirmation evidence")
+    literature_ids = set(lock.get("evidence_literature_paper_ids") or [])
+    literature_search = lock.get("literature_search") or {}
+    available_literature_ids = {
+        str(paper_id)
+        for query in literature_search.get("queries") or []
+        for paper_id in (query or {}).get("paper_ids") or []
+    }
+    if not literature_ids.issubset(available_literature_ids):
+        raise PipelineLockCriticError("Pipeline lock cites unavailable literature evidence")
+    if literature_ids and literature_search.get("evidence_scope") != (
+        "scholarly_metadata_or_abstract_discovery_only"
+    ):
+        raise PipelineLockCriticError("Pipeline lock overstates its literature evidence scope")
     usage = lock.get("budget_usage") or {}
     executions = int(usage.get("candidate_executions", -1))
     cycles = int(usage.get("research_cycles", -1))
