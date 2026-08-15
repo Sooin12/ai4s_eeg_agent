@@ -1,5 +1,7 @@
 # 多被试选择性个体化 Demo 交接（2026-08-15）
 
+> **已被 v2 交接取代。** 此文档记录 v1 在首次限额中断时的状态，仅用于历史审计。v1 后续恢复至被试 02 的 Pipeline Lock Critic，并因冻结门控与 runner 预算不一致被判 `revise`；没有访问 confirmation。正式完成状态与结果请以 `MULTISUBJECT_SELECTIVE_DEMO_V2_2026-08-15.md` 为准。
+
 ## 当前结论
 
 多被试数据、Dataset-Level 合同、统一 pipeline incumbent 选择器、选择性个体化门控、Critic 复核和可恢复运行入口均已完成。正式四被试运行尚未完成：它安全停在 `Research Design / protocol_critic` 之前，原因是 Moonshot 账户达到组织级每日 1,500,000 token 上限。没有访问任何 subject 的 frozen confirmation session。

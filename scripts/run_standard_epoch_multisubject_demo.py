@@ -47,10 +47,20 @@ def _allocate_budget(
     per_subject_cost = remaining_cost / len(subjects)
     candidate_executions = candidate_count * len(subjects)
     maximum_candidates = int(budget["max_candidate_executions"])
-    if candidate_executions + 5 * len(subjects) > maximum_candidates:
-        raise ValueError("Envelope candidate budget cannot cover incumbent plus subject search")
-    if candidate_count + 5 * len(subjects) > int(budget["max_research_cycles"]):
-        raise ValueError("Envelope research-cycle budget cannot cover the frozen plan")
+    remaining_candidate_executions = maximum_candidates - candidate_executions
+    remaining_research_cycles = int(budget["max_research_cycles"]) - candidate_count
+    per_subject_candidate_budget = min(
+        remaining_candidate_executions // len(subjects),
+        remaining_research_cycles // len(subjects),
+    )
+    if per_subject_candidate_budget < 2:
+        raise ValueError(
+            "Envelope cannot fund at least two individualized candidates per subject "
+            "after the dataset-incumbent grid"
+        )
+    design_retries = min(4, int(budget["max_api_retries"]))
+    remaining_retries = int(budget["max_api_retries"]) - design_retries
+    per_subject_retries = remaining_retries // len(subjects)
     allocation = {
         "schema_version": "1.0",
         "status": "frozen_before_research_design",
@@ -59,6 +69,10 @@ def _allocate_budget(
         "interpretation": {
             "confirmation_max_access_count": "one access per subject",
             "shared_confirmation_data": False,
+            "per_subject_candidate_budget": (
+                "maximum equal allocation remaining after the complete dataset-incumbent "
+                "grid, bounded by both global candidate-execution and research-cycle caps"
+            ),
         },
         "design": {
             "research_cycles": 0,
@@ -66,7 +80,7 @@ def _allocate_budget(
             "compute_seconds": 120,
             "api_total_tokens": design_tokens,
             "paid_cost": design_cost,
-            "provider_retries": 4,
+            "provider_retries": design_retries,
             "recovery_attempts": 1,
             "confirmation_accesses": 0,
         },
@@ -82,12 +96,12 @@ def _allocate_budget(
         },
         "per_subject": {
             subject_id: {
-                "research_cycles": 5,
-                "candidate_executions": 5,
+                "research_cycles": per_subject_candidate_budget,
+                "candidate_executions": per_subject_candidate_budget,
                 "compute_seconds": min(1200, float(budget["max_compute_seconds"]) / len(subjects)),
                 "api_total_tokens": per_subject_tokens,
                 "paid_cost": per_subject_cost,
-                "provider_retries": 6,
+                "provider_retries": per_subject_retries,
                 "recovery_attempts": 1,
                 "confirmation_accesses": 1,
             }
@@ -164,15 +178,32 @@ def main(argv: list[str] | None = None) -> int:
         write_json(allocation_path, allocation, refuse_overwrite=True)
     audit = JsonlAuditSink(root / "audit.jsonl", run_id=run_id, resume=args.resume)
 
-    extension_path = root / "research_design" / "budget_extension.json"
-    if args.resume and extension_path.is_file():
-        extension = load_json_object(extension_path)
+    research_design_root = root / "research_design"
+    continuation_paths = sorted(research_design_root.glob("budget_continuation-*.json"))
+    legacy_extension_path = research_design_root / "budget_extension.json"
+    continuation_path = continuation_paths[-1] if continuation_paths else None
+    if continuation_path is None and legacy_extension_path.is_file():
+        continuation_path = legacy_extension_path
+    continuation: dict[str, Any] | None = None
+    if args.resume and continuation_path is not None:
+        continuation = load_json_object(continuation_path)
+        continuation_id = str(
+            continuation.get("extension_id")
+            or continuation.get("continuation_id")
+            or continuation_path.stem
+        )
+        if continuation_path == legacy_extension_path:
+            continuation_ledger_path = research_design_root / "budget_extension_ledger.jsonl"
+        else:
+            continuation_ledger_path = continuation_path.with_name(
+                f"{continuation_path.stem}_ledger.jsonl"
+            )
         design_ledger = BudgetLedger(
-            root / "research_design" / "budget_extension_ledger.jsonl",
-            run_id=f"{run_id}:research-design:budget-extension-001",
-            limits=_limits(extension["additional_limits"]),
-            authority_sha256=sha256_path(extension_path),
-            create=not (root / "research_design" / "budget_extension_ledger.jsonl").exists(),
+            continuation_ledger_path,
+            run_id=f"{run_id}:research-design:{continuation_id}",
+            limits=_limits(continuation["additional_limits"]),
+            authority_sha256=sha256_path(continuation_path),
+            create=not continuation_ledger_path.exists(),
         )
     else:
         design_ledger = BudgetLedger(
@@ -274,11 +305,18 @@ def main(argv: list[str] | None = None) -> int:
         if (subject_root / "final_internal_evidence_report.json").is_file():
             rows.append(_summarize_completed_subject(subject_root, subject_id))
             continue
+        subject_limits = dict(allocation["per_subject"][subject_id])
+        subject_authority_path = allocation_path
+        if continuation is not None:
+            overrides = continuation.get("per_subject_limit_overrides") or {}
+            if subject_id in overrides:
+                subject_limits.update(overrides[subject_id])
+                subject_authority_path = continuation_path
         ledger = BudgetLedger(
             root / "budgets" / f"subject-{subject_id}.jsonl",
             run_id=f"{run_id}:subject:{subject_id}",
-            limits=_limits(allocation["per_subject"][subject_id]),
-            authority_sha256=sha256_path(allocation_path),
+            limits=_limits(subject_limits),
+            authority_sha256=sha256_path(subject_authority_path),
             create=True,
         )
         rows.append(
