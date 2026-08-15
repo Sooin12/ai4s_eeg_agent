@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from bci_autodiscovery.workflow.autonomy import (
     load_json_object,
     sha256_path,
 )
+from bci_autodiscovery.workflow.budget import BudgetLedger
 
 from .contracts import AgentRunResult
 from .language import DEFAULT_LANGUAGE_INSTRUCTION
@@ -53,6 +55,77 @@ rationale justifies the tradeoff. Do not ask a human to select the pipeline."""
 
 class PipelineSearchError(ValueError):
     pass
+
+
+_FAMILY_COMPONENT_REQUIREMENTS = {
+    "bandpower_lda": frozenset(
+        {"reference_original", "filter_bandpass", "feature_log_bandpower", "model_lda"}
+    ),
+    "csp_lda": frozenset(
+        {"reference_original", "filter_bandpass", "feature_csp", "model_lda"}
+    ),
+}
+
+
+def _constrain_capabilities_by_dataset_contract(
+    *, protocol: dict[str, Any], capabilities: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Intersect executable families with the frozen DatasetLevelContract."""
+
+    binding = protocol.get("dataset_level_contract")
+    if not isinstance(binding, dict):
+        return capabilities, None
+    contract_path = Path(str(binding.get("path") or "")).expanduser().resolve()
+    expected_sha256 = str(binding.get("sha256") or "")
+    if not contract_path.is_file() or sha256_path(contract_path) != expected_sha256:
+        raise PipelineSearchError("Frozen protocol DatasetLevelContract binding changed")
+    contract = load_json_object(contract_path)
+    if contract.get("status") != "frozen_dataset_level_contract":
+        raise PipelineSearchError("Pipeline search requires a frozen DatasetLevelContract")
+    if contract.get("dataset_id") != protocol.get("dataset_id"):
+        raise PipelineSearchError("Frozen protocol and DatasetLevelContract disagree")
+
+    canonical_ids = {
+        str(item.get("component_id"))
+        for items in (contract.get("canonical_space") or {}).get("dimensions", {}).values()
+        for item in items
+        if isinstance(item, dict) and item.get("component_id")
+    }
+    excluded_ids = {
+        str(item.get("component_id"))
+        for item in contract.get("excluded_components") or []
+        if isinstance(item, dict) and item.get("component_id")
+    }
+    allowed_families: list[str] = []
+    excluded_families: dict[str, list[str]] = {}
+    for family in capabilities["families"]:
+        requirements = _FAMILY_COMPONENT_REQUIREMENTS.get(str(family))
+        if requirements is None:
+            excluded_families[str(family)] = ["family_has_no_contract_component_mapping"]
+            continue
+        missing = sorted(requirements.difference(canonical_ids))
+        explicitly_excluded = sorted(requirements.intersection(excluded_ids))
+        reasons = [
+            *[f"not_in_canonical_space:{item}" for item in missing],
+            *[f"dataset_contract_excluded:{item}" for item in explicitly_excluded],
+        ]
+        if reasons:
+            excluded_families[str(family)] = reasons
+        else:
+            allowed_families.append(str(family))
+    if not allowed_families:
+        raise PipelineSearchError(
+            "No executable pipeline family survives the frozen DatasetLevelContract"
+        )
+    constrained = deepcopy(capabilities)
+    constrained["families"] = allowed_families
+    return constrained, {
+        "path": str(contract_path),
+        "sha256": expected_sha256,
+        "contract_id": contract.get("contract_id"),
+        "allowed_executable_families": allowed_families,
+        "excluded_executable_families": excluded_families,
+    }
 
 
 def _load_capabilities(path: Path) -> dict[str, Any]:
@@ -227,6 +300,7 @@ def create_pipeline_search_tools(
     literature_store_path: Path | None = None,
     literature_sources: dict[str, Any] | None = None,
     literature_search_run_id: str | None = None,
+    budget_ledger: BudgetLedger | None = None,
 ) -> tuple[ToolRegistry, dict[str, Any]]:
     subject_path = Path(subject_profile_path).expanduser().resolve()
     protocol_path = Path(frozen_protocol_path).expanduser().resolve()
@@ -244,6 +318,10 @@ def create_pipeline_search_tools(
     dataset_id = str(protocol.get("dataset_id") or "")
     if not dataset_id:
         raise PipelineSearchError("Frozen protocol lacks dataset_id")
+    capabilities, dataset_contract_policy = _constrain_capabilities_by_dataset_contract(
+        protocol=protocol,
+        capabilities=capabilities,
+    )
     envelope = load_autonomy_envelope(envelope_path, expected_dataset_id=dataset_id)
     literature_authorized = bool(
         envelope["permissions"].get("allow_network_literature")
@@ -346,6 +424,7 @@ def create_pipeline_search_tools(
                 "search_sessions": list(search_sessions),
             },
             "executable_capabilities": capabilities,
+            "dataset_contract_capability_policy": dataset_contract_policy,
             "profile_conditioned_capabilities": profile_capabilities,
             "literature_discovery": {
                 "authorized": literature_authorized,
@@ -360,6 +439,11 @@ def create_pipeline_search_tools(
                 "frozen_protocol": {"path": str(protocol_path), "sha256": sha256_path(protocol_path)},
                 "autonomy_envelope": {"path": str(envelope_path), "sha256": sha256_path(envelope_path)},
                 "capability_registry": {"path": str(capability_path), "sha256": sha256_path(capability_path)},
+                **(
+                    {"dataset_level_contract": dataset_contract_policy}
+                    if dataset_contract_policy is not None
+                    else {}
+                ),
             },
         }
 
@@ -440,12 +524,30 @@ def create_pipeline_search_tools(
         require_context()
         if len(experiments) >= maximum:
             raise PipelineSearchError("Autonomous search budget is exhausted")
+        if budget_ledger is not None:
+            budget_ledger.precheck(
+                f"{executor.subject_id}:pipeline_candidate",
+                {"candidate_executions": 1, "research_cycles": 1},
+            )
         spec = PipelineSpec.from_dict(pipeline)
         _validate_capability(spec, capabilities, profile_capabilities)
         configuration_hash = pipeline_configuration_hash(spec)
         if configuration_hash in configuration_hashes:
             raise PipelineSearchError("Equivalent pipeline configuration was already evaluated")
         result = executor.evaluate(spec)
+        if budget_ledger is not None:
+            budget_ledger.account(
+                f"{executor.subject_id}:pipeline_candidate",
+                {
+                    "candidate_executions": 1,
+                    "research_cycles": 1,
+                    "compute_seconds": float(result["elapsed_seconds"]),
+                },
+                metadata={
+                    "pipeline_id": spec.pipeline_id,
+                    "pipeline_configuration_sha256": configuration_hash,
+                },
+            )
         if primary_metric not in result["metrics"]:
             raise PipelineSearchError(
                 f"Executor result does not contain primary metric {primary_metric!r}"
@@ -547,6 +649,11 @@ def create_pipeline_search_tools(
                 "frozen_protocol": {"path": str(protocol_path), "sha256": sha256_path(protocol_path)},
                 "autonomy_envelope": {"path": str(envelope_path), "sha256": sha256_path(envelope_path), "envelope_id": envelope["envelope_id"]},
                 "capability_registry": {"path": str(capability_path), "sha256": sha256_path(capability_path)},
+                **(
+                    {"dataset_level_contract": dataset_contract_policy}
+                    if dataset_contract_policy is not None
+                    else {}
+                ),
                 **(
                     {
                         "literature_store": {

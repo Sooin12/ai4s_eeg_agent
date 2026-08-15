@@ -14,6 +14,7 @@ def test_raw_dataset_cli_uses_selected_real_provider_for_profiler(
         model="fixture-model",
         timeout_seconds=0.0,
         progress_callback=None,
+        complete=lambda **_kwargs: None,
     )
 
     monkeypatch.setattr(

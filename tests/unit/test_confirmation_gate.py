@@ -30,6 +30,7 @@ from bci_autodiscovery.pipelines import DeterministicPipelineExecutor
 from bci_autodiscovery.profiling.subject_measurements import EpochSession
 from bci_autodiscovery.reporting import finalize_internal_evidence_report
 from bci_autodiscovery.workflow.autonomy import sha256_path
+from bci_autodiscovery.workflow.budget import BudgetLedger
 from tests.fixtures.contracts import (
     autonomy_envelope,
     build_frozen_dataset_contract,
@@ -238,6 +239,7 @@ def _controller(
     tmp_path: Path,
     *,
     loader,
+    budget_ledger: BudgetLedger | None = None,
 ) -> OneShotConfirmationController:
     executor, lock_path, critique_path, protocol_path, envelope_path = (
         _lock_and_pass_critique(tmp_path)
@@ -251,6 +253,7 @@ def _controller(
         autonomy_envelope_path=envelope_path,
         access_record_path=tmp_path / "confirmation_access.json",
         confirmation_result_path=tmp_path / "confirmation_result.json",
+        budget_ledger=budget_ledger,
     )
 
 
@@ -272,6 +275,36 @@ def test_one_shot_confirmation_is_bound_audited_and_never_refits(tmp_path: Path)
     with pytest.raises(ConfirmationAccessError, match="already been accessed"):
         controller.confirm()
     assert calls == 1
+
+
+def test_confirmation_access_and_compute_are_recorded_in_shared_budget(
+    tmp_path: Path,
+) -> None:
+    ledger = BudgetLedger(
+        tmp_path / "budget.jsonl",
+        run_id="confirmation-budget",
+        limits={
+            "research_cycles": 4,
+            "candidate_executions": 4,
+            "compute_seconds": 100,
+            "api_total_tokens": 1000,
+            "paid_cost": 0,
+            "provider_retries": 2,
+            "recovery_attempts": 2,
+            "confirmation_accesses": 1,
+        },
+        authority_sha256="fixture-authority",
+        create=True,
+    )
+    controller = _controller(
+        tmp_path,
+        loader=lambda: [_session("3", 31)],
+        budget_ledger=ledger,
+    )
+    controller.confirm()
+    totals = ledger.totals
+    assert totals["confirmation_accesses"] == 1
+    assert totals["compute_seconds"] > 0
 
 
 def test_nonpassing_or_unbound_critique_never_opens_confirmation(tmp_path: Path) -> None:

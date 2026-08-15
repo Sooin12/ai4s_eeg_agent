@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from bci_autodiscovery.workflow.autonomy import (
     load_json_object,
     sha256_path,
 )
+from bci_autodiscovery.workflow.budget import BudgetLedger
 
 
 class ConfirmationAccessError(RuntimeError):
@@ -56,6 +58,7 @@ class OneShotConfirmationController:
         autonomy_envelope_path: Path,
         access_record_path: Path,
         confirmation_result_path: Path,
+        budget_ledger: BudgetLedger | None = None,
     ) -> None:
         self.search_executor = search_executor
         self.confirmation_loader = confirmation_loader
@@ -65,6 +68,7 @@ class OneShotConfirmationController:
         self.autonomy_envelope_path = Path(autonomy_envelope_path).expanduser().resolve()
         self.access_record_path = Path(access_record_path).expanduser().resolve()
         self.confirmation_result_path = Path(confirmation_result_path).expanduser().resolve()
+        self.budget_ledger = budget_ledger
 
     def confirm(self) -> dict[str, Any]:
         """Consume the single access only after all outcome-blind gates have passed."""
@@ -122,8 +126,21 @@ class OneShotConfirmationController:
         if self.search_executor.subject_id != lock.get("subject_id"):
             raise ConfirmationAccessError("Search executor and pipeline lock subjects differ")
 
+        if self.budget_ledger is not None:
+            self.budget_ledger.precheck(
+                f"{lock['subject_id']}:confirmation_access",
+                {"confirmation_accesses": 1},
+            )
+
         # All learned state is fitted before the confirmation access token is consumed.
+        fit_started = time.monotonic()
         fitted = self.search_executor.fit(lock["selected_pipeline"])
+        if self.budget_ledger is not None:
+            self.budget_ledger.account(
+                f"{lock['subject_id']}:confirmation_fit",
+                {"compute_seconds": time.monotonic() - fit_started},
+                metadata={"pipeline_sha256": lock["pipeline_sha256"]},
+            )
         if fitted.spec != lock["selected_pipeline"]:
             raise ConfirmationAccessError("Fitted model specification differs from pipeline lock")
 
@@ -164,8 +181,15 @@ class OneShotConfirmationController:
             "retry_allowed_after_failure": False,
         }
         _write_json_exclusive(self.access_record_path, access_record)
+        if self.budget_ledger is not None:
+            self.budget_ledger.account(
+                f"{lock['subject_id']}:confirmation_access",
+                {"confirmation_accesses": 1},
+                metadata={"access_id": access_record["access_id"]},
+            )
 
         try:
+            evaluation_started = time.monotonic()
             confirmation_sessions = tuple(self.confirmation_loader())
             expected_confirmation_ids = access_record["expected_confirmation_session_ids"]
             actual_confirmation_ids = [session.session_id for session in confirmation_sessions]
@@ -182,6 +206,12 @@ class OneShotConfirmationController:
                 sessions=confirmation_sessions,
                 data_role="frozen_confirmation",
             )
+            if self.budget_ledger is not None:
+                self.budget_ledger.account(
+                    f"{lock['subject_id']}:confirmation_evaluation",
+                    {"compute_seconds": time.monotonic() - evaluation_started},
+                    metadata={"access_id": access_record["access_id"]},
+                )
             primary_metric = str(protocol["evaluation"]["primary_metric"])
             if primary_metric not in evaluation["metrics"]:
                 raise ConfirmationAccessError(
@@ -233,4 +263,3 @@ class OneShotConfirmationController:
             }
             _write_json_exclusive(self.confirmation_result_path, failure)
             raise
-

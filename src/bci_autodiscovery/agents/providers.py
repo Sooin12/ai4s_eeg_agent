@@ -7,6 +7,7 @@ import json
 import http.client
 import os
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -15,6 +16,44 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, Sequence
 
 from .contracts import ModelResponse, ModelUsage, ToolCall
+
+
+_REQUEST_INTERVAL_LOCK = threading.Lock()
+_LAST_REQUEST_AT_BY_SCOPE: dict[str, float] = {}
+
+
+def enforce_minimum_request_interval(
+    provider: "OpenAICompatibleProvider",
+    *,
+    seconds: float,
+    scope: str | None = None,
+) -> "OpenAICompatibleProvider":
+    """Throttle request starts across provider instances sharing one account scope."""
+
+    if seconds <= 0:
+        raise ValueError("minimum request interval must be positive")
+    key = scope or f"{provider.name}:{provider.base_url}"
+    original_complete = provider.complete
+
+    def throttled_complete(
+        *,
+        messages: Sequence[dict[str, Any]],
+        tools: Sequence[dict[str, Any]],
+    ) -> ModelResponse:
+        with _REQUEST_INTERVAL_LOCK:
+            last_request_at = _LAST_REQUEST_AT_BY_SCOPE.get(key, 0.0)
+            wait_seconds = seconds - (time.monotonic() - last_request_at)
+            if wait_seconds > 0:
+                provider._progress(
+                    "provider_rate_limit_wait",
+                    {"scope": key, "wait_seconds": wait_seconds},
+                )
+                time.sleep(wait_seconds)
+            _LAST_REQUEST_AT_BY_SCOPE[key] = time.monotonic()
+        return original_complete(messages=messages, tools=tools)
+
+    provider.complete = throttled_complete  # type: ignore[method-assign]
+    return provider
 
 
 class ProviderError(RuntimeError):

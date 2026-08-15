@@ -12,7 +12,7 @@ from bci_autodiscovery.reporting import AgentOutputPublisher
 
 from .audit import JsonlAuditSink
 from .dataset_level_agent import DatasetLevelAgent
-from .providers import OpenAICompatibleProvider
+from .providers import OpenAICompatibleProvider, enforce_minimum_request_interval
 from .run_recovery import write_process_state
 
 
@@ -99,6 +99,11 @@ def main(argv: list[str] | None = None) -> int:
                     16384 if model.startswith("kimi-k2.7") else 4096
                 ),
                 reasoning_effort=args.reasoning_effort,
+            )
+            enforce_minimum_request_interval(
+                provider,
+                seconds=21.0,
+                scope="kimi-organization-rpm",
             )
         else:
             provider = OpenAICompatibleProvider.deepseek(

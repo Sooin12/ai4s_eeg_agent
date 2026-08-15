@@ -203,6 +203,7 @@ def _run_subject(
         capability_registry_path=capability_path,
         literature_store_path=literature_store_path,
         literature_search_run_id=f"{run_id}-{subject_id}-method-evidence",
+        budget_ledger=ledger,
     )
     search_result = PipelineSearchAgent(
         runtime=_runtime(
@@ -262,6 +263,7 @@ def _run_subject(
         autonomy_envelope_path=envelope_path,
         access_record_path=subject_root / "confirmation_access.json",
         confirmation_result_path=subject_root / "confirmation_result.json",
+        budget_ledger=ledger,
     )
     confirmation_controller.confirm()
     return _complete_subject_reporting(

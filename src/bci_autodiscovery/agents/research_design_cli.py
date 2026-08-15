@@ -15,7 +15,7 @@ from bci_autodiscovery.reporting import AgentOutputPublisher
 
 from .audit import JsonlAuditSink
 from .budgeted_provider import TokenPricing
-from .providers import OpenAICompatibleProvider
+from .providers import OpenAICompatibleProvider, enforce_minimum_request_interval
 from .research_design_agent import ResearchDesignAgent
 from .run_recovery import (
     assert_research_design_run_recoverable,
@@ -138,6 +138,11 @@ def main(argv: list[str] | None = None) -> int:
                 model=model,
                 max_output_tokens=args.max_output_tokens,
                 reasoning_effort=args.reasoning_effort,
+            )
+            enforce_minimum_request_interval(
+                provider,
+                seconds=21.0,
+                scope="kimi-organization-rpm",
             )
         else:
             provider = OpenAICompatibleProvider.deepseek(

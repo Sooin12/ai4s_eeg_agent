@@ -9,6 +9,9 @@ import pytest
 from bci_autodiscovery.agents.contracts import ModelResponse, ToolCall
 from bci_autodiscovery.agents.pipeline_search import (
     PipelineSearchAgent,
+    PipelineSearchError,
+    _constrain_capabilities_by_dataset_contract,
+    _load_capabilities,
     create_pipeline_search_tools,
 )
 from bci_autodiscovery.agents.providers import ScriptedProvider
@@ -18,6 +21,7 @@ from bci_autodiscovery.pipelines import DeterministicPipelineExecutor
 from bci_autodiscovery.literature import PaperRecord
 from bci_autodiscovery.profiling.subject_measurements import EpochSession
 from bci_autodiscovery.workflow.autonomy import sha256_path
+from bci_autodiscovery.workflow.budget import BudgetLedger
 from tests.fixtures.contracts import (
     autonomy_envelope,
     build_frozen_dataset_contract,
@@ -63,6 +67,55 @@ def _pipeline(family: str, pipeline_id: str) -> dict:
         "cv_folds": 3,
         "random_seed": 5,
     }
+
+
+def test_executable_families_are_intersected_with_frozen_dataset_contract(
+    tmp_path: Path,
+) -> None:
+    contract_path = tmp_path / "dataset_level_contract.json"
+    contract = {
+        "status": "frozen_dataset_level_contract",
+        "dataset_id": "contract-filter-fixture",
+        "contract_id": "contract-filter-v1",
+        "canonical_space": {
+            "dimensions": {
+                "referencing": [{"component_id": "reference_original"}],
+                "temporal_filtering": [{"component_id": "filter_bandpass"}],
+                "features": [{"component_id": "feature_log_bandpower"}],
+                "models": [{"component_id": "model_lda"}],
+            }
+        },
+        "excluded_components": [{"component_id": "feature_csp"}],
+    }
+    _write(contract_path, contract)
+    protocol = {
+        "dataset_id": "contract-filter-fixture",
+        "dataset_level_contract": {
+            "path": str(contract_path),
+            "sha256": sha256_path(contract_path),
+        },
+    }
+    capabilities = _load_capabilities(
+        Path("configs/executable_pipeline_capabilities.v0.json")
+    )
+    constrained, policy = _constrain_capabilities_by_dataset_contract(
+        protocol=protocol,
+        capabilities=capabilities,
+    )
+    assert constrained["families"] == ["bandpower_lda"]
+    assert policy is not None
+    assert policy["excluded_executable_families"]["csp_lda"] == [
+        "not_in_canonical_space:feature_csp",
+        "dataset_contract_excluded:feature_csp",
+    ]
+
+    contract["contract_id"] = "tampered"
+    _write(contract_path, contract)
+    with pytest.raises(PipelineSearchError, match="binding changed"):
+        _constrain_capabilities_by_dataset_contract(
+            protocol=protocol,
+            capabilities=capabilities,
+        )
 
 
 def _contracts(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -176,12 +229,29 @@ def test_agent_evaluates_distinct_candidates_and_locks_evidence(tmp_path: Path) 
         [bandpower_result, csp_result],
         key=lambda item: item["metrics"]["balanced_accuracy"],
     )
+    ledger = BudgetLedger(
+        tmp_path / "search-budget.jsonl",
+        run_id="pipeline-search-budget",
+        limits={
+            "research_cycles": 4,
+            "candidate_executions": 4,
+            "compute_seconds": 100,
+            "api_total_tokens": 1000,
+            "paid_cost": 0,
+            "provider_retries": 2,
+            "recovery_attempts": 2,
+            "confirmation_accesses": 1,
+        },
+        authority_sha256="fixture-authority",
+        create=True,
+    )
     tools, context = create_pipeline_search_tools(
         executor=DeterministicPipelineExecutor(sessions=[_search_session()]),
         subject_profile_path=subject_path,
         frozen_protocol_path=protocol_path,
         autonomy_envelope_path=envelope_path,
         capability_registry_path=capability_path,
+        budget_ledger=ledger,
     )
     provider = ScriptedProvider(
         [
@@ -226,6 +296,9 @@ def test_agent_evaluates_distinct_candidates_and_locks_evidence(tmp_path: Path) 
     assert locked["selected_experiment_id"] == selected["experiment_id"]
     assert locked["budget_usage"]["research_cycles"] == 2
     assert locked["confirmation_accessed"] is False
+    assert ledger.totals["candidate_executions"] == 2
+    assert ledger.totals["research_cycles"] == 2
+    assert ledger.totals["compute_seconds"] > 0
 
 
 def test_equivalent_candidate_and_early_lock_fail_closed(tmp_path: Path) -> None:
