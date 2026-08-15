@@ -20,6 +20,11 @@ from bci_autodiscovery.pipelines import (
     pipeline_configuration_hash,
 )
 from bci_autodiscovery.pipelines.executor import pipeline_spec_schema
+from bci_autodiscovery.search.dataset_incumbent import (
+    DatasetIncumbentError,
+    expected_selective_route,
+    validate_dataset_incumbent,
+)
 from bci_autodiscovery.workflow.autonomy import (
     load_autonomy_envelope,
     load_json_object,
@@ -37,6 +42,11 @@ PIPELINE_SEARCH_SYSTEM_PROMPT = f"""{DEFAULT_LANGUAGE_INSTRUCTION}
 You are the autonomous individualized Pipeline Search Agent. First call
 read_pipeline_search_context. Use the frozen protocol, SubjectProfile, executable capability
 registry, and remaining budget. You cannot access frozen-confirmation data.
+
+When a frozen dataset-wide incumbent is present, evaluate that exact configuration as the
+mandatory first control. You may search profile-linked alternatives, but the frozen selective
+personalization gate decides whether the final route is personalized or falls back to the
+dataset incumbent. Do not override that gate.
 
 When literature discovery is authorized, first formulate a phenotype-linked method query and
 call search_subject_method_evidence. Treat returned metadata/abstracts as directional evidence,
@@ -301,6 +311,7 @@ def create_pipeline_search_tools(
     literature_sources: dict[str, Any] | None = None,
     literature_search_run_id: str | None = None,
     budget_ledger: BudgetLedger | None = None,
+    dataset_incumbent_path: Path | None = None,
 ) -> tuple[ToolRegistry, dict[str, Any]]:
     subject_path = Path(subject_profile_path).expanduser().resolve()
     protocol_path = Path(frozen_protocol_path).expanduser().resolve()
@@ -318,10 +329,47 @@ def create_pipeline_search_tools(
     dataset_id = str(protocol.get("dataset_id") or "")
     if not dataset_id:
         raise PipelineSearchError("Frozen protocol lacks dataset_id")
+    incumbent_path = (
+        Path(dataset_incumbent_path).expanduser().resolve()
+        if dataset_incumbent_path is not None
+        else None
+    )
+    incumbent: dict[str, Any] | None = None
+    incumbent_configuration_hash: str | None = None
+    minimum_personalization_gain: float | None = None
+    if incumbent_path is not None:
+        if not incumbent_path.is_file():
+            raise PipelineSearchError("Dataset incumbent artifact is unavailable")
+        incumbent = load_json_object(incumbent_path)
+        try:
+            validate_dataset_incumbent(incumbent)
+        except DatasetIncumbentError as exc:
+            raise PipelineSearchError(f"Dataset incumbent is invalid: {exc}") from exc
+        if incumbent.get("dataset_id") != dataset_id:
+            raise PipelineSearchError("Dataset incumbent belongs to another dataset")
+        incumbent_configuration_hash = str(incumbent["pipeline_configuration_sha256"])
+        minimum_personalization_gain = float(
+            incumbent["personalization_policy"]["minimum_search_gain_over_incumbent"]
+        )
     capabilities, dataset_contract_policy = _constrain_capabilities_by_dataset_contract(
         protocol=protocol,
         capabilities=capabilities,
     )
+    if incumbent is not None:
+        incumbent_spec = PipelineSpec.from_dict(incumbent["selected_pipeline"])
+        if incumbent_spec.family not in capabilities["families"]:
+            raise PipelineSearchError(
+                "Dataset incumbent is outside the frozen dataset capability contract"
+            )
+        bound_contract = (incumbent.get("source_contracts") or {}).get(
+            "dataset_level_contract"
+        ) or {}
+        if dataset_contract_policy is not None and (
+            bound_contract.get("sha256") != dataset_contract_policy.get("sha256")
+        ):
+            raise PipelineSearchError(
+                "Dataset incumbent is not bound to the active DatasetLevelContract"
+            )
     envelope = load_autonomy_envelope(envelope_path, expected_dataset_id=dataset_id)
     literature_authorized = bool(
         envelope["permissions"].get("allow_network_literature")
@@ -388,6 +436,14 @@ def create_pipeline_search_tools(
             }
             for item in experiments.values()
         ]
+        incumbent_experiment = next(
+            (
+                item
+                for item in experiments.values()
+                if item.get("configuration_sha256") == incumbent_configuration_hash
+            ),
+            None,
+        )
         return {
             "subject_id": executor.subject_id,
             "primary_metric": primary_metric,
@@ -405,6 +461,11 @@ def create_pipeline_search_tools(
                 "evidence_scope": "scholarly_metadata_or_abstract_discovery_only",
             },
             "confirmation_data_accessed": False,
+            "selective_personalization": {
+                "enabled": incumbent is not None,
+                "incumbent_evaluated": incumbent_experiment is not None,
+                "minimum_search_gain_over_incumbent": minimum_personalization_gain,
+            },
         }
 
     def read_context() -> dict[str, Any]:
@@ -426,6 +487,18 @@ def create_pipeline_search_tools(
             "executable_capabilities": capabilities,
             "dataset_contract_capability_policy": dataset_contract_policy,
             "profile_conditioned_capabilities": profile_capabilities,
+            "dataset_pipeline_incumbent": (
+                {
+                    "incumbent_id": incumbent["incumbent_id"],
+                    "selected_pipeline": incumbent["selected_pipeline"],
+                    "pipeline_configuration_sha256": incumbent_configuration_hash,
+                    "selected_score_summary": incumbent["selected_score_summary"],
+                    "personalization_policy": incumbent["personalization_policy"],
+                    "mandatory_control": True,
+                }
+                if incumbent is not None
+                else None
+            ),
             "literature_discovery": {
                 "authorized": literature_authorized,
                 "enabled": literature_enabled,
@@ -442,6 +515,16 @@ def create_pipeline_search_tools(
                 **(
                     {"dataset_level_contract": dataset_contract_policy}
                     if dataset_contract_policy is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "dataset_pipeline_incumbent": {
+                            "path": str(incumbent_path),
+                            "sha256": sha256_path(incumbent_path),
+                        }
+                    }
+                    if incumbent_path is not None
                     else {}
                 ),
             },
@@ -532,6 +615,14 @@ def create_pipeline_search_tools(
         spec = PipelineSpec.from_dict(pipeline)
         _validate_capability(spec, capabilities, profile_capabilities)
         configuration_hash = pipeline_configuration_hash(spec)
+        if (
+            incumbent_configuration_hash is not None
+            and not experiments
+            and configuration_hash != incumbent_configuration_hash
+        ):
+            raise PipelineSearchError(
+                "The frozen dataset incumbent must be evaluated as the first control"
+            )
         if configuration_hash in configuration_hashes:
             raise PipelineSearchError("Equivalent pipeline configuration was already evaluated")
         result = executor.evaluate(spec)
@@ -603,6 +694,31 @@ def create_pipeline_search_tools(
         if not cited_hypotheses.issubset(available_hypotheses):
             raise PipelineSearchError("Pipeline lock cites unavailable subject hypotheses")
         selected = experiments[selected_experiment_id]
+        route_decision: dict[str, Any] | None = None
+        if incumbent is not None:
+            try:
+                route_decision = expected_selective_route(
+                    incumbent_configuration_sha256=str(incumbent_configuration_hash),
+                    minimum_gain=float(minimum_personalization_gain),
+                    experiments=list(experiments.values()),
+                    primary_metric=primary_metric,
+                )
+            except DatasetIncumbentError as exc:
+                raise PipelineSearchError(
+                    f"Selective personalization gate failed: {exc}"
+                ) from exc
+            if selected_experiment_id != route_decision["required_selected_experiment_id"]:
+                raise PipelineSearchError(
+                    "Selected experiment violates the frozen selective personalization gate"
+                )
+            required_route_evidence = {
+                route_decision["incumbent_experiment_id"],
+                route_decision["best_personalized_experiment_id"],
+            }
+            if not required_route_evidence.issubset(cited):
+                raise PipelineSearchError(
+                    "Selective route lock must cite incumbent and best personalized evidence"
+                )
         observed_best = max(
             float(item["metrics"][primary_metric]) for item in experiments.values()
         )
@@ -664,8 +780,20 @@ def create_pipeline_search_tools(
                     if literature_enabled and literature_store is not None
                     else {}
                 ),
+                **(
+                    {
+                        "dataset_pipeline_incumbent": {
+                            "path": str(incumbent_path),
+                            "sha256": sha256_path(incumbent_path),
+                            "incumbent_id": incumbent["incumbent_id"],
+                        }
+                    }
+                    if incumbent_path is not None and incumbent is not None
+                    else {}
+                ),
             },
             "profile_conditioned_capabilities": profile_capabilities,
+            "route_decision": route_decision,
             "confirmation_accessed": False,
             "search_reopen_allowed_after_confirmation": False,
         }

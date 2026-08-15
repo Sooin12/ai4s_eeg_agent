@@ -806,6 +806,95 @@ def test_production_research_design_agent_accounts_and_freezes(tmp_path: Path) -
     assert (run_dir / "research_design_run.json").is_file()
 
 
+def test_research_design_keeps_valid_terminal_tool_artifact_when_epilogue_fails(
+    tmp_path: Path,
+) -> None:
+    contract_path, _, envelope_path, profile, envelope = _contracts(tmp_path)
+    proposal = _proposal(profile, contract_path)
+    run_dir = tmp_path / "post-tool-provider-failure"
+    ledger = BudgetLedger(
+        run_dir / "budget_ledger.jsonl",
+        run_id="post-tool-provider-failure",
+        limits=limits_from_envelope(envelope),
+        authority_sha256=sha256_path(envelope_path),
+        create=True,
+    )
+    audit = MemoryAuditSink()
+
+    def provider_factory(stage: str, cycle: int):
+        assert cycle == 1
+        if stage == "planner":
+            # No third response: the optional natural-language epilogue fails after
+            # the validated terminal tool has already accepted the protocol.
+            return ScriptedProvider(
+                [
+                    ModelResponse(
+                        tool_calls=(
+                            ToolCall("read", "read_autonomous_research_context", {}),
+                        )
+                    ),
+                    ModelResponse(
+                        tool_calls=(
+                            ToolCall(
+                                "record",
+                                "record_research_protocol_proposal",
+                                {"proposal": proposal},
+                            ),
+                        )
+                    ),
+                ]
+            )
+        proposal_path = run_dir / "proposal-0001.json"
+        recorded = json.loads(proposal_path.read_text(encoding="utf-8"))
+        return ScriptedProvider(
+            [
+                ModelResponse(
+                    tool_calls=(ToolCall("read", "read_protocol_critic_context", {}),)
+                ),
+                ModelResponse(
+                    tool_calls=(
+                        ToolCall(
+                            "record",
+                            "record_protocol_critique",
+                            {
+                                "critique": {
+                                    "schema_version": "2.0",
+                                    "review_id": "post-tool-failure-pass",
+                                    "dataset_id": recorded["dataset_id"],
+                                    "protocol_id": recorded["protocol_id"],
+                                    "reviewed_protocol_sha256": sha256_path(proposal_path),
+                                    "verdict": "pass",
+                                    "findings": [],
+                                    "required_revisions": [],
+                                    "rationale": "The valid terminal proposal remains reviewable.",
+                                }
+                            },
+                        ),
+                    )
+                ),
+                ModelResponse(content="critic complete"),
+            ]
+        )
+
+    result = ResearchDesignAgent(
+        run_id="post-tool-provider-failure",
+        run_dir=run_dir,
+        dataset_level_contract_path=contract_path,
+        autonomy_envelope_path=envelope_path,
+        provider_factory=provider_factory,
+        budget_ledger=ledger,
+        pricing=None,
+        audit=audit,
+        max_revision_cycles=1,
+    ).run()
+    assert result.status == "completed"
+    assert (run_dir / "proposal-0001.json").is_file()
+    assert any(
+        event["event_type"] == "terminal_tool_artifact_recovered"
+        for event in audit.events
+    )
+
+
 def test_research_design_agent_recovers_without_overwriting_checkpoints(
     tmp_path: Path,
 ) -> None:

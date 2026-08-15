@@ -32,6 +32,7 @@ data/processed/*
 # Runtime outputs
 artifacts/runs/*
 !artifacts/runs/.gitkeep
+artifacts/authorities/*
 agent_outputs/*
 !agent_outputs/README.md
 

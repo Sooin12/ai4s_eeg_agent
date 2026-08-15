@@ -250,7 +250,7 @@ class ResearchDesignAgent:
             ).run()
             proposal = agent_result.latest_tool_result("record_revised_research_protocol")
         self._record_phase(result, f"{stage}-{cycle:04d}", agent_result.to_dict())
-        if agent_result.status != "completed" or proposal is None:
+        if proposal is None:
             self._fail_recoverable(
                 state,
                 result,
@@ -258,6 +258,17 @@ class ResearchDesignAgent:
                 error=agent_result.error or f"{stage} produced no valid protocol",
             )
             return None
+        if agent_result.status != "completed":
+            self.audit.record(
+                "terminal_tool_artifact_recovered",
+                {
+                    "stage": stage,
+                    "cycle": cycle,
+                    "runtime_status": agent_result.status,
+                    "runtime_error": agent_result.error,
+                    "artifact_kind": "research_protocol_proposal",
+                },
+            )
         proposal_path = self.run_dir / f"proposal-{cycle:04d}.json"
         atomic_json(proposal_path, proposal, refuse_overwrite=True)
         result.artifacts[f"proposal_{cycle:04d}"] = self._artifact_record(proposal_path)
@@ -288,7 +299,7 @@ class ResearchDesignAgent:
         agent_result = ProtocolCriticAgent(runtime=runtime, context=context).run()
         critique = agent_result.latest_tool_result("record_protocol_critique")
         self._record_phase(result, f"{stage}-{cycle:04d}", agent_result.to_dict())
-        if agent_result.status != "completed" or critique is None:
+        if critique is None:
             self._fail_recoverable(
                 state,
                 result,
@@ -296,6 +307,17 @@ class ResearchDesignAgent:
                 error=agent_result.error or "Protocol Critic produced no valid verdict",
             )
             return None
+        if agent_result.status != "completed":
+            self.audit.record(
+                "terminal_tool_artifact_recovered",
+                {
+                    "stage": stage,
+                    "cycle": cycle,
+                    "runtime_status": agent_result.status,
+                    "runtime_error": agent_result.error,
+                    "artifact_kind": "protocol_critique",
+                },
+            )
         critique_path = self.run_dir / f"critique-{cycle:04d}.json"
         atomic_json(critique_path, critique, refuse_overwrite=True)
         result.artifacts[f"critique_{cycle:04d}"] = self._artifact_record(critique_path)
@@ -349,6 +371,7 @@ class ResearchDesignAgent:
             }
             if any(state.get(field) != value for field, value in expected_authorities.items()):
                 raise ResearchDesignAgentError("Research Design authorities changed before recovery")
+            self._materialize_terminal_tool_artifacts(state)
             self._reconcile_orphan_checkpoints(state)
             state["status"] = "in_progress"
             state["error"] = None
@@ -469,6 +492,105 @@ class ResearchDesignAgent:
         if changed:
             state["stage"] = "recovered_orphan_checkpoints"
             atomic_json(self.state_path, state)
+
+    def _materialize_terminal_tool_artifacts(self, state: dict[str, Any]) -> None:
+        """Recover validated terminal tool outputs lost after an optional model epilogue."""
+
+        (
+            contract_path,
+            contract,
+            _profile_path,
+            profile,
+            envelope_path,
+            envelope,
+        ) = _load_authorized_research_context(
+            dataset_level_contract_path=self.contract_path,
+            autonomy_envelope_path=self.envelope_path,
+        )
+        phases = state.get("phase_results") or []
+
+        def latest_result(phase_result: dict[str, Any], tool_name: str) -> dict[str, Any] | None:
+            executions = (phase_result.get("result") or {}).get("tool_executions") or []
+            for execution in reversed(executions):
+                value = execution.get("result")
+                if (
+                    execution.get("tool_name") == tool_name
+                    and not execution.get("error")
+                    and isinstance(value, dict)
+                ):
+                    return value
+            return None
+
+        for phase in phases:
+            name = str(phase.get("phase") or "")
+            if name.startswith("planner-"):
+                tool_name = "record_research_protocol_proposal"
+            elif name.startswith("reviser-"):
+                tool_name = "record_revised_research_protocol"
+            else:
+                continue
+            try:
+                cycle = int(name.rsplit("-", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            proposal_path = self.run_dir / f"proposal-{cycle:04d}.json"
+            if proposal_path.exists():
+                continue
+            proposal = latest_result(phase, tool_name)
+            if proposal is None:
+                continue
+            validate_research_protocol_proposal(
+                proposal,
+                dataset_contract=contract,
+                profile=profile,
+                envelope=envelope,
+            )
+            validate_research_protocol_authority_bindings(
+                proposal,
+                dataset_contract_path=contract_path,
+                autonomy_envelope_path=envelope_path,
+            )
+            atomic_json(proposal_path, proposal, refuse_overwrite=True)
+            self.audit.record(
+                "terminal_tool_artifact_materialized",
+                {
+                    "stage": name,
+                    "artifact_kind": "research_protocol_proposal",
+                    **self._artifact_record(proposal_path),
+                },
+            )
+
+        for phase in phases:
+            name = str(phase.get("phase") or "")
+            if not name.startswith("protocol_critic-"):
+                continue
+            try:
+                cycle = int(name.rsplit("-", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            critique_path = self.run_dir / f"critique-{cycle:04d}.json"
+            proposal_path = self.run_dir / f"proposal-{cycle:04d}.json"
+            if critique_path.exists() or not proposal_path.is_file():
+                continue
+            critique = latest_result(phase, "record_protocol_critique")
+            if critique is None:
+                continue
+            proposal = load_json_object(proposal_path)
+            validate_protocol_critique(
+                critique,
+                proposal=proposal,
+                proposal_sha256=sha256_path(proposal_path),
+                deterministic_validation_passed=True,
+            )
+            atomic_json(critique_path, critique, refuse_overwrite=True)
+            self.audit.record(
+                "terminal_tool_artifact_materialized",
+                {
+                    "stage": name,
+                    "artifact_kind": "protocol_critique",
+                    **self._artifact_record(critique_path),
+                },
+            )
 
     def _result_from_state(self, state: dict[str, Any]) -> ResearchDesignAgentResult:
         return ResearchDesignAgentResult(

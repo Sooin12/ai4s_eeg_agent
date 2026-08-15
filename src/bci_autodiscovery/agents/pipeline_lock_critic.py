@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from bci_autodiscovery.pipelines import PipelineSpec
+from bci_autodiscovery.search.dataset_incumbent import (
+    DatasetIncumbentError,
+    expected_selective_route,
+    validate_dataset_incumbent,
+)
 from bci_autodiscovery.workflow.autonomy import (
     load_autonomy_envelope,
     load_json_object,
@@ -116,6 +121,44 @@ def validate_pipeline_lock(
     selected_score = float(selected["metrics"][metric])
     if abs(float(lock.get("selected_search_score")) - selected_score) > 1e-12:
         raise PipelineLockCriticError("Selected search score differs from experiment evidence")
+    incumbent_binding = (lock.get("source_contracts") or {}).get(
+        "dataset_pipeline_incumbent"
+    )
+    if incumbent_binding is None:
+        if lock.get("route_decision") is not None:
+            raise PipelineLockCriticError(
+                "Pipeline lock has an unbound selective route decision"
+            )
+        return
+    incumbent_path = Path(str(incumbent_binding.get("path") or "")).expanduser().resolve()
+    if (
+        not incumbent_path.is_file()
+        or sha256_path(incumbent_path) != incumbent_binding.get("sha256")
+    ):
+        raise PipelineLockCriticError("Dataset incumbent binding failed integrity check")
+    incumbent = load_json_object(incumbent_path)
+    try:
+        validate_dataset_incumbent(incumbent)
+        expected = expected_selective_route(
+            incumbent_configuration_sha256=str(
+                incumbent["pipeline_configuration_sha256"]
+            ),
+            minimum_gain=float(
+                incumbent["personalization_policy"][
+                    "minimum_search_gain_over_incumbent"
+                ]
+            ),
+            experiments=list(experiments.values()),
+            primary_metric=metric,
+        )
+    except DatasetIncumbentError as exc:
+        raise PipelineLockCriticError(
+            f"Selective personalization evidence is invalid: {exc}"
+        ) from exc
+    if lock.get("route_decision") != expected:
+        raise PipelineLockCriticError("Selective route decision differs from frozen policy")
+    if selected_id != expected["required_selected_experiment_id"]:
+        raise PipelineLockCriticError("Selected pipeline violates the fallback gate")
 
 
 def pipeline_lock_critique_schema() -> dict[str, Any]:

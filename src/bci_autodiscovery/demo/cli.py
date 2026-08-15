@@ -44,7 +44,10 @@ from bci_autodiscovery.demo.synthetic import (
 from bci_autodiscovery.demo.presentation import build_presentation_bundle
 from bci_autodiscovery.evaluation.confirmation import OneShotConfirmationController
 from bci_autodiscovery.pipelines import DeterministicPipelineExecutor
-from bci_autodiscovery.profiling.subject_measurements import SubjectMeasurementEngine
+from bci_autodiscovery.profiling.subject_measurements import (
+    SubjectEpochSource,
+    SubjectMeasurementEngine,
+)
 from bci_autodiscovery.reporting import finalize_internal_evidence_report
 from bci_autodiscovery.workflow.autonomy import load_json_object, sha256_path
 from bci_autodiscovery.workflow.budget import BudgetLedger, limits_from_envelope
@@ -132,12 +135,18 @@ def _runtime(
 
 def _require_artifact(result: Any, tool_name: str, *, stage: str) -> dict[str, Any]:
     artifact = result.latest_tool_result(tool_name)
-    if result.status != "completed" or artifact is None:
+    if artifact is None:
         raise RuntimeError(f"{stage} failed: {result.error or 'required artifact missing'}")
+    if result.status != "completed":
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] terminal_tool_artifact_recovered: "
+            f"{stage} ({result.status})",
+            flush=True,
+        )
     return artifact
 
 
-def _load_sessions(source: DemoNpzEpochSource, subject_id: str, ids: list[str]) -> list[Any]:
+def _load_sessions(source: SubjectEpochSource, subject_id: str, ids: list[str]) -> list[Any]:
     return [source.load_session(subject_id=subject_id, session_id=item) for item in ids]
 
 
@@ -146,13 +155,14 @@ def _run_subject(
     run_id: str,
     subject_id: str,
     root: Path,
-    source: DemoNpzEpochSource,
+    source: SubjectEpochSource,
     dataset_profile_path: Path,
     protocol_path: Path,
     envelope_path: Path,
     capability_path: Path,
     audit: JsonlAuditSink,
     ledger: BudgetLedger,
+    dataset_incumbent_path: Path | None = None,
 ) -> dict[str, Any]:
     subject_root = root / "subjects" / subject_id
     subject_root.mkdir(parents=True, exist_ok=False)
@@ -204,6 +214,7 @@ def _run_subject(
         literature_store_path=literature_store_path,
         literature_search_run_id=f"{run_id}-{subject_id}-method-evidence",
         budget_ledger=ledger,
+        dataset_incumbent_path=dataset_incumbent_path,
     )
     search_result = PipelineSearchAgent(
         runtime=_runtime(
@@ -416,7 +427,7 @@ def _summarize_completed_subject(subject_root: Path, subject_id: str) -> dict[st
     selected = lock["selected_pipeline"]
     return {
         "subject_id": subject_id,
-        "synthetic_phenotype": SUBJECT_PHENOTYPES[subject_id],
+        "synthetic_phenotype": SUBJECT_PHENOTYPES.get(subject_id, "real_subject"),
         "selected_pipeline_id": selected["pipeline_id"],
         "family": selected["family"],
         "bandpass_hz": selected["bandpass_hz"],
